@@ -1,91 +1,65 @@
-import { BlockedSite, StorageData } from "./types";
+import { matchesUrl } from "./pattern";
+import { loadSites, onSitesChanged } from "./storage";
 
-// 拡張機能のインストール時に初期化
-chrome.runtime.onInstalled.addListener(async () => {
-  const data = await chrome.storage.local.get("blockedSites");
-  if (!data.blockedSites) {
-    await chrome.storage.local.set({ blockedSites: [] });
-  }
-  await updateBlockRules();
+const BLOCKED_PAGE = "blocked.html";
+const RULE_PRIORITY = 1;
+
+chrome.runtime.onInstalled.addListener(() => {
+  void updateBlockRules();
 });
 
-// ストレージが変更されたらルールを更新
-chrome.storage.onChanged.addListener((changes, area) => {
-  if (area === "local" && changes.blockedSites) {
-    updateBlockRules();
-  }
+onSitesChanged(() => {
+  void updateBlockRules();
 });
 
-// タブのURL変更を監視(SPA対策)
-chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
-  if (changeInfo.url || changeInfo.status === 'loading') {
-    const url = changeInfo.url || tab.url;
-    if (url) {
-      await checkAndBlockUrl(tabId, url);
-    }
+// SPA の画面遷移はリクエストを伴わず declarativeNetRequest で止められないため、タブの URL も監視する
+chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+  const url =
+    changeInfo.url ?? (changeInfo.status === "loading" ? tab.url : undefined);
+  if (url !== undefined) {
+    void checkAndBlockUrl(tabId, url);
   }
 });
 
-// 新しいタブを開いた時
-chrome.tabs.onCreated.addListener(async (tab) => {
-  if (tab.url && tab.id) {
-    await checkAndBlockUrl(tab.id, tab.url);
+chrome.tabs.onCreated.addListener((tab) => {
+  if (tab.id !== undefined && tab.url !== undefined) {
+    void checkAndBlockUrl(tab.id, tab.url);
   }
 });
 
-// URL をチェックしてブロック
 async function checkAndBlockUrl(tabId: number, url: string): Promise<void> {
-  const data = await chrome.storage.local.get("blockedSites") as StorageData;
-  const sites = data.blockedSites || [];
-
-  for (const site of sites) {
-    if (!site.enabled) continue;
-
-    // ドメインを抽出して比較
-    const domain = site.urlPattern.replace('||', '');
-    if (url.includes(domain)) {
-      const blockedUrl = chrome.runtime.getURL('blocked.html');
-      // 無限ループ防止
-      if (!url.startsWith(blockedUrl)) {
-        chrome.tabs.update(tabId, { url: blockedUrl });
-      }
-      break;
-    }
+  const sites = await loadSites();
+  const blocked = sites.some(
+    (site) => site.enabled && matchesUrl(site.urlPattern, url)
+  );
+  const blockedUrl = chrome.runtime.getURL(BLOCKED_PAGE);
+  // ブロック画面自体を再びブロックしないようにする
+  if (blocked && !url.startsWith(blockedUrl)) {
+    await chrome.tabs.update(tabId, { url: blockedUrl });
   }
 }
 
-// ブロックルールを更新する関数
 async function updateBlockRules(): Promise<void> {
-  const data = await chrome.storage.local.get("blockedSites") as StorageData;
-  const sites = data.blockedSites || [];
-
-  // 既存ルールを全て削除
+  const sites = await loadSites();
   const existingRules = await chrome.declarativeNetRequest.getDynamicRules();
-  const existingIds = existingRules.map(rule => rule.id);
 
-  // 新しいルールを作成
   const newRules: chrome.declarativeNetRequest.Rule[] = sites
-    .filter(site => site.enabled)
-    .map(site => ({
+    .filter((site) => site.enabled)
+    .map((site) => ({
       id: site.id,
-      priority: 1,
+      priority: RULE_PRIORITY,
       action: {
         type: chrome.declarativeNetRequest.RuleActionType.REDIRECT,
-        redirect: {
-          extensionPath: "/blocked.html"
-        }
+        redirect: { extensionPath: `/${BLOCKED_PAGE}` },
       },
       condition: {
         urlFilter: site.urlPattern,
-        resourceTypes: [chrome.declarativeNetRequest.ResourceType.MAIN_FRAME]
-      }
+        resourceTypes: [chrome.declarativeNetRequest.ResourceType.MAIN_FRAME],
+      },
     }));
 
   await chrome.declarativeNetRequest.updateDynamicRules({
-    removeRuleIds: existingIds,
-    addRules: newRules
+    removeRuleIds: existingRules.map((rule) => rule.id),
+    addRules: newRules,
   });
-
-  console.log(`Block rules updated: ${newRules.length} sites blocked`);
 }
-
