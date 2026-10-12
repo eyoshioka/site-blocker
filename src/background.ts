@@ -1,5 +1,6 @@
-import { matchesUrl } from "./pattern";
+import { matchesUrl, toUrlFilter } from "./pattern";
 import { loadSites, onSitesChanged } from "./storage";
+import type { BlockedSite } from "./types";
 
 const BLOCKED_PAGE = "blocked.html";
 const RULE_PRIORITY = 1;
@@ -43,23 +44,34 @@ async function updateBlockRules(): Promise<void> {
   const sites = await loadSites();
   const existingRules = await chrome.declarativeNetRequest.getDynamicRules();
 
-  const newRules: chrome.declarativeNetRequest.Rule[] = sites
+  const newRules = sites
     .filter((site) => site.enabled)
-    .map((site) => ({
-      id: site.id,
-      priority: RULE_PRIORITY,
-      action: {
-        type: chrome.declarativeNetRequest.RuleActionType.REDIRECT,
-        redirect: { extensionPath: `/${BLOCKED_PAGE}` },
-      },
-      condition: {
-        urlFilter: site.urlPattern,
-        resourceTypes: [chrome.declarativeNetRequest.ResourceType.MAIN_FRAME],
-      },
-    }));
+    .flatMap((site) => toRule(site) ?? []);
 
   await chrome.declarativeNetRequest.updateDynamicRules({
     removeRuleIds: existingRules.map((rule) => rule.id),
     addRules: newRules,
   });
+}
+
+// ドメインとして読めないパターンにはルールを作らない
+function toRule(
+  site: BlockedSite
+): chrome.declarativeNetRequest.Rule | undefined {
+  const urlFilter = toUrlFilter(site.urlPattern);
+  if (urlFilter === undefined) {
+    return undefined;
+  }
+  return {
+    id: site.id,
+    priority: RULE_PRIORITY,
+    action: {
+      type: chrome.declarativeNetRequest.RuleActionType.REDIRECT,
+      redirect: { extensionPath: `/${BLOCKED_PAGE}` },
+    },
+    condition: {
+      urlFilter,
+      resourceTypes: [chrome.declarativeNetRequest.ResourceType.MAIN_FRAME],
+    },
+  };
 }

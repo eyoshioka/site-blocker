@@ -1,4 +1,4 @@
-import { toUrlPattern } from "./pattern";
+import { toHostname, toUrlPattern } from "./pattern";
 import { loadSites, saveSites } from "./storage";
 import type { BlockedSite } from "./types";
 
@@ -59,8 +59,8 @@ function createSiteItem(site: BlockedSite): HTMLLIElement {
 }
 
 async function addSite(): Promise<void> {
-  const domain = urlInput.value.trim();
-  if (domain === "") {
+  const hostname = toHostname(urlInput.value);
+  if (hostname === undefined) {
     return;
   }
 
@@ -68,7 +68,7 @@ async function addSite(): Promise<void> {
   const maxId = Math.max(0, ...sites.map((s) => s.id));
   sites.push({
     id: maxId + 1,
-    urlPattern: toUrlPattern(domain),
+    urlPattern: toUrlPattern(hostname),
     enabled: true,
   });
   await saveSites(sites);
